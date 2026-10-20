@@ -16,6 +16,8 @@
 
 #include "csrc/ops/native_norm/native_norm_aten_kernels.h"
 
+#include <cmath>
+#include <cstdint>
 #include <optional>
 #include <utility>
 
@@ -23,7 +25,9 @@
 #include "ATen/core/Scalar.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/sum.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/ScalarType.h"
 #include "c10/util/OptionalArrayRef.h"
@@ -48,10 +52,24 @@ namespace torch_tpu {
 
 namespace {
 
+absl::Status ValidateNonEmptyNormReduction(
+    const at::Tensor& self, double ord,
+    absl::Span<const int64_t> canonical_dims) {
+  if (self.numel() == 0 && (ord < 0.0 || std::isinf(ord))) {
+    for (const int64_t d : canonical_dims) {
+      TT_RET_CHECK(self.size(d) != 0, error::kInvalidArgument)
+          << "expected non-empty reduction dimension for ord " << ord
+          << ", got size 0 along dim " << d;
+    }
+  }
+  return absl::OkStatus();
+}
+
 // Helper function that builds and dispatches the MLIR/SHLO operation to compute
 // the vector p-norm of a tensor over specified dimensions.
+template <typename PromotedScalarT>
 absl::StatusOr<at::Tensor> PNorm(const at::Tensor& self,
-                                 MaybePromotedScalar& promoted_ord, double ord,
+                                 PromotedScalarT& promoted_ord, double ord,
                                  at::OptionalIntArrayRef dim,
                                  ReductionMode reduction_mode,
                                  std::optional<at::ScalarType> dtype,
@@ -62,7 +80,9 @@ absl::StatusOr<at::Tensor> PNorm(const at::Tensor& self,
     out_dtype = c10::get_default_dtype_as_scalartype();
   }
 
-  TT_ASSIGN_OR_RETURN(Dimensions canonical_dims, CanonicalizeDims(self, dim));
+  TT_ASSIGN_OR_RETURN(const Dimensions canonical_dims,
+                      CanonicalizeDims(self, dim));
+  TT_RETURN_IF_ERROR(ValidateNonEmptyNormReduction(self, ord, canonical_dims));
 
   const Dimensions output_dims =
       GetSizesAfterReduction(self.sizes(), reduction_mode, canonical_dims);
@@ -123,29 +143,31 @@ at::Tensor AtenNativeNormScalar(const at::Tensor& self, const at::Scalar& p) {
 at::Tensor AtenNativeNormScalarOptDimDtype(
     const at::Tensor& self, const std::optional<at::Scalar>& p,
     at::IntArrayRef dim, bool keepdim, std::optional<at::ScalarType> dtype) {
-  at::Scalar ord = p.value_or(2.0);
-  MaybePromotedScalar promoted_ord =
-      PromoteScalar(ord).AvoidPromoting(ScalarValue::kZero);
-  TT_KERNEL(OpName::kNativeNormScalarOptDimDtype, op_cache_keys,
-            (self, promoted_ord, dim, keepdim, dtype), {
-              if (promoted_ord.IsZero()) {
-                at::ScalarType out_dtype =
-                    dtype.value_or(c10::toRealValueType(self.scalar_type()));
-                if (!dtype.has_value() && IsIntegral(out_dtype)) {
-                  out_dtype = c10::get_default_dtype_as_scalartype();
-                }
-                return at::sum(self.ne(0), dim, keepdim, out_dtype);
-              } else {
-                TT_THROW_IF_ERROR(op_cache_keys.SetParam("p", ord));
-                TT_ASSIGN_OR_THROW(
-                    at::Tensor res,
-                    PNorm(self, promoted_ord, ord.toDouble(), dim,
-                          keepdim ? ReductionMode::kKeepDims
-                                  : ReductionMode::kDropDims,
-                          dtype, std::move(op_cache_keys)));
-                return res;
-              }
-            });
+  const at::Scalar ord = p.value_or(2.0);
+  PromotedScalar promoted_ord = PromoteScalar(ord);
+  TT_KERNEL(
+      OpName::kNativeNormScalarOptDimDtype, op_cache_keys,
+      (self, promoted_ord, dim, keepdim, dtype), {
+        if (ord.toDouble() == 0.0) {
+          TT_THROW_IF_ERROR(
+              promoted_ord.GetTensor(c10::toRealValueType(self.scalar_type()))
+                  .status());
+          at::ScalarType out_dtype =
+              dtype.value_or(c10::toRealValueType(self.scalar_type()));
+          if (!dtype.has_value() && IsIntegral(out_dtype)) {
+            out_dtype = c10::get_default_dtype_as_scalartype();
+          }
+          return at::sum(self.ne(0), dim, keepdim, out_dtype);
+        } else {
+          TT_THROW_IF_ERROR(op_cache_keys.SetParam("p", ord));
+          TT_ASSIGN_OR_THROW(at::Tensor res,
+                             PNorm(self, promoted_ord, ord.toDouble(), dim,
+                                   keepdim ? ReductionMode::kKeepDims
+                                           : ReductionMode::kDropDims,
+                                   dtype, std::move(op_cache_keys)));
+          return res;
+        }
+      });
 }
 
 }  // namespace torch_tpu
