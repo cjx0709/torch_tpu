@@ -1560,6 +1560,48 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       else:
         self.assertNotIn("chlo.erfc", shlo)
 
+  @parameterized.parameters("none", "tanh")
+  def test_gelu_backward_mixed_dtypes_and_out_cast(self, approximate):
+    # Mixed-dtype inputs (float32 grad_output, bfloat16 self and vice versa).
+    grad_f32 = torch.ones(4, dtype=torch.float32)
+    self_bf16 = torch.tensor([0.5, -0.5, 1.0, -1.0], dtype=torch.bfloat16)
+
+    def run_mixed(device):
+      g = to(grad_f32, device)
+      s = to(self_bf16, device)
+      return (
+          torch.ops.aten.gelu_backward(g, s, approximate=approximate),
+          torch.ops.aten.gelu_backward(s, g, approximate=approximate),
+      )
+
+    self.assert_close_tpu_vs_cpu(run_mixed, rtol=1e-4, atol=1e-4)
+
+    # Out dtype casting: float32 -> bfloat16, float64 -> float32, and
+    # float32 -> complex64 (verifies computation stays in promoted dtype).
+    x_f32 = torch.tensor([0.5, -0.5, 1.0, -1.0], dtype=torch.float32)
+    x_f64 = torch.tensor([0.5, -0.5, 1.0, -1.0], dtype=torch.float64)
+
+    def run_out_casts(device):
+      g32 = to(grad_f32, device)
+      s32 = to(x_f32, device)
+      out_bf16 = torch.empty(4, dtype=torch.bfloat16, device=device)
+      torch.ops.aten.gelu_backward.grad_input(
+          g32, s32, approximate=approximate, grad_input=out_bf16
+      )
+      out_c64 = torch.empty(4, dtype=torch.complex64, device=device)
+      torch.ops.aten.gelu_backward.grad_input(
+          g32, s32, approximate=approximate, grad_input=out_c64
+      )
+      g64 = to(x_f64, device)
+      s64 = to(x_f64, device)
+      out_f32 = torch.empty(4, dtype=torch.float32, device=device)
+      torch.ops.aten.gelu_backward.grad_input(
+          g64, s64, approximate=approximate, grad_input=out_f32
+      )
+      return out_bf16, out_c64, out_f32
+
+    self.assert_close_tpu_vs_cpu(run_out_casts, rtol=1e-4, atol=1e-4)
+
   def test_logcumsumexp_out_dtype(self):
     device = torch.device("tpu")
     x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
