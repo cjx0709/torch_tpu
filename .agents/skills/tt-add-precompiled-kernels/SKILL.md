@@ -121,7 +121,7 @@ Add `csrc/experimental/precompiled_kernels/{kernel}.{h,cc}` (e.g.
     each operand to its metadata parameter, -1 for none), set
     `set_run_backend_only(true)` so that no HLO pass rewrites the custom call,
     set the result layout and `argument_layouts`, and compile with
-    `client.CompileAndLoad`, wrapped in `AdaptXlaError`.
+    `client.CompileAndLoad`, wrapped in `WrapXlaError`.
 *   **Header**: exposes only `Get{Op}UnboundedDynamicKernels()`, returning a
     `std::vector<UnboundedDynamicKernel>`, and documents each kernel's buffer
     contract.
