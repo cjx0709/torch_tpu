@@ -19,6 +19,8 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/uniform/uniform.h"
@@ -27,6 +29,7 @@
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
@@ -94,14 +97,32 @@ absl::StatusOr<MlirOpResults<1>> BuildDropoutBackwardShlo(
                                                       op_builder.getF32Type());
   }
 
-  TT_ASSIGN_OR_RETURN((auto [grad_output_bcst, mask_bcst]),
-                      ApplyBroadcastIfNeeded(grad_output, mask));
+  if (!IsBooleanType(GetTensorTypeOrDie(mask))) {
+    auto zero_mask = MakeConstantLike(mask, 0);
+    mask = mlir::stablehlo::Compare(mask, zero_mask,
+                                    mlir::stablehlo::ComparisonDirection::NE);
+  }
 
-  auto zero_const = MakeConstantLike(grad_output_bcst, 0.0);
-  auto masked_grad_op =
-      mlir::stablehlo::Select(mask_bcst, grad_output_bcst, zero_const);
-  auto scale_const = MakeConstantLike(masked_grad_op, scale);
-  return mlir::stablehlo::Mul(masked_grad_op, scale_const);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mask_bcst,
+                      BroadcastIfNeeded(mask, GetDimensions(grad_output)));
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType elem_type,
+                      ConvertTo<mlir::ElementType>(
+                          GetTensorTypeOrDie(grad_output).getElementType()));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_elem_type,
+                      InferComputationDtype(elem_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp scaled_grad,
+                      CastIfNeeded(grad_output, compute_elem_type));
+
+  auto scale_const = MakeConstantLike(scaled_grad, scale);
+  auto scaled = mlir::stablehlo::Mul(scaled_grad, scale_const);
+  auto zero_const = MakeConstantLike(scaled, 0.0);
+  auto output = mlir::stablehlo::Select(mask_bcst, scaled, zero_const);
+
+  if (compute_elem_type != elem_type) {
+    TT_ASSIGN_OR_RETURN(output, CastIfNeeded(output, elem_type));
+  }
+  return output;
 }
 
 }  // namespace torch_tpu
