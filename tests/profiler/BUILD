@@ -21,6 +21,10 @@
 # yilingyuan
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "torch_tpu_cc_test",
     "torch_tpu_package_end",
@@ -34,10 +38,8 @@ package(
 torch_tpu_py_test(
     name = "profiler_impl_test",
     srcs = ["profiler_impl_test.py"],
+    compatible_accelerators = tpus(),
     main = "profiler_impl_test.py",
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
@@ -53,10 +55,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "profiler_api_test",
     srcs = ["profiler_api_test.py"],
+    compatible_accelerators = tpus(),
     main = "profiler_api_test.py",
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
@@ -75,10 +75,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "profiler_backend_test",
     srcs = ["profiler_backend_test.py"],
+    compatible_accelerators = tpus(),
     main = "profiler_backend_test.py",
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
@@ -145,9 +143,7 @@ torch_tpu_cc_test(
 torch_tpu_py_test(
     name = "named_scope_test",
     srcs = ["named_scope_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -166,8 +162,8 @@ torch_tpu_py_test(
     name = "profiler_integration_test",
     timeout = "long",
     srcs = ["profiler_integration_test.py"],
+    compatible_accelerators = tpus(),
     main = "profiler_integration_test.py",
-    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",

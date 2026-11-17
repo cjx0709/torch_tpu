@@ -18,7 +18,17 @@
 # haifeng-jin
 # jparkerh
 
-load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
+    "//build_files:build_defs.bzl",
+    "if_oss",
+    "torch_tpu_cc_library",
+    "torch_tpu_cc_test",
+    "torch_tpu_package_end",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -62,11 +72,11 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "device_assignment_pipeline_test",
     srcs = ["device_assignment_pipeline_test.cc"],
+    compatible_accelerators = if_oss(tpus()),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     requires_libtpu = True,
-    tags = if_oss(["requires-tpu-v5lite"]),
     deps = [
         ":device_assignment",
         ":device_assignment_pipeline",
@@ -98,13 +108,13 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "traversal_test",
     srcs = ["traversal_test.cc"],
+    # Route to OSS TPU runners and exclude from OSS CPU runners
+    # (running on CPU took 600+ sec due to emulated device init).
+    compatible_accelerators = if_oss(tpus()),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     requires_libtpu = True,
-    # Route to OSS TPU runners and exclude from OSS CPU runners
-    # (running on CPU took 600+ sec due to emulated device init).
-    tags = if_oss(["requires-tpu-v5lite"]),
     deps = [
         ":device_buffer",
         ":structured_log_buffer",
@@ -141,10 +151,10 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "materialize_test",
     srcs = ["materialize_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":current_stream",
         ":device_buffer",
@@ -222,12 +232,10 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "shutdown_test",
     srcs = ["shutdown_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":device_buffer",
         ":materialize",
@@ -1220,10 +1228,10 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "events_queue_test",
     srcs = ["events_queue_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":current_stream",
         ":device_buffer",

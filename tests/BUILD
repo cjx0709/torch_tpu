@@ -22,16 +22,21 @@
 # arfaian
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "SPARSECORE_TPUS",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "DEFAULT_TORCH_EXAMPLE_DEPS",
-    "REQUIRES_V5_MULTI_DEVICE",
     "TEST_COV_ENV",
     "if_oss",
     "torch_tpu_oss_torch_example",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
-    "tpu_gen",
 )
 load("//shims/build_defs_testing:bzl_library.bzl", "bzl_library")
 load("//shims/py_rules:py_binary.bzl", "py_binary")
@@ -209,7 +214,7 @@ torch_tpu_py_test(
     srcs = ["api_registry_test.py"],
     # Route to OSS TPU runners and exclude from OSS CPU runners
     # (running on CPU took 600+ sec due to emulated device init).
-    tags = if_oss(["requires-tpu-v5lite"]),
+    compatible_accelerators = if_oss(tpus()),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -272,13 +277,10 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "ao_offload_test",
     srcs = ["ao_offload_test.py"],
-    tags = [
-        # TODO(b/583958199): TransferBufferSubAllocator::Alloc calls
-        # System::DmaMap across all host HBM locations, aborting on multi-chip
-        # TPU v7x runners when TPU_VISIBLE_DEVICES is restricted.
-        "fails-on-tpu-v7",
-        "requires-tpu-v5lite",
-    ],
+    # TODO(b/583958199): TransferBufferSubAllocator::Alloc calls
+    # System::DmaMap across all host HBM locations, aborting on multi-chip
+    # TPU v7x runners when TPU_VISIBLE_DEVICES is restricted.
+    compatible_accelerators = tpus(exclude = ["v7"]),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -304,10 +306,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "env_test",
     srcs = ["env_test.py"],
+    compatible_accelerators = tpus(),
     shard_count = 4,
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":seed_test_utils",
         ":subprocess_test_utils",
@@ -336,9 +336,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "env_vars_test",
     srcs = ["env_vars_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         ":subprocess_test_utils",
@@ -643,12 +641,19 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_GRAD_DATA,
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 15,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
@@ -683,12 +688,19 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_GRAD_DATA,
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 1,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
@@ -723,12 +735,19 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_GRAD_DATA,
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 1,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
@@ -761,13 +780,20 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_COMPILED_DATA,
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in postsubmit and nightly.",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 40,
     tags = [
         "noasan",  # TODO: fix the timeout of test_grid_sampler in asan mode.
@@ -801,12 +827,19 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 50,
     tags = [
         "noasan",  # This test times out in asan mode.
@@ -841,18 +874,24 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_GRAD_DATA,
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 35,
     tags = [
         "nosan",  # Rely on ops_test_grad for *san coverage.
-        "ok-to-wait-for-v6e-in-presubmit",
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OSS_GOLDEN_TAGS,
     deps = [
@@ -881,14 +920,21 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 50,
     tags = [
         "noasan",  # This test times out in asan mode.
@@ -918,14 +964,21 @@ torch_tpu_py_test(
         "--test_categories=nonzero",
         "--max_samples_per_op_dtype=10",  # To avoid timeout.
     ],
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 1,  # This test has only 1 test case.
     tags = [
         "noasan",  # This test times out in asan mode.
@@ -955,14 +1008,21 @@ torch_tpu_py_test(
     args = [
         "--max_samples_per_op_dtype=10",
     ],
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_DATA,
     env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "none"},
     main = "ops_test.py",
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 1,  # Increase as more tests are marked with @also_run_static.
     tags = [
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
@@ -993,14 +1053,21 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 1,
     tags = [
         "noasan",  # This test times out in asan mode.
@@ -1047,6 +1114,7 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=10"],
     ),
+    compatible_accelerators = tpus(),
     # The perf mode measures the ops on the GPU golden inputs.
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
@@ -1058,7 +1126,6 @@ torch_tpu_py_test(
         "cpu:8",  # Specify the number of CPUs for reproducible results.
         "nofastbuild",  # Measures performance.
         "requires-net:external",  # For writing remote files.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":op_testing",
@@ -1082,12 +1149,19 @@ torch_tpu_py_test(
         "--print_op_inputs=1",
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 50,
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
@@ -1118,13 +1192,20 @@ torch_tpu_py_test(
         "--print_op_inputs=1",
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     data = _GPU_GOLDENS_COMPILED_DATA,
     main = "ops_test.py",
     nopresubmit = "Dynamic compile tests are run in postsubmit to avoid overloading the presubmit.",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 50,
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
@@ -1156,16 +1237,23 @@ torch_tpu_py_test(
         "--print_op_inputs=1",
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     # TODO: b/581040310 - Generate compiled-grad GPU goldens; no
     # ops_test_gpu_golden_grad_compiled dataset exists yet, so reuse eager GPU
     # grad goldens for now.
     data = _GPU_GOLDENS_GRAD_DATA,
     main = "ops_test.py",
     nopresubmit = "Dynamic compile grad tests are run in postsubmit to avoid overloading the presubmit.",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 50,
     tags = [
         "nosan",  # Rely on ops_test_grad for *san coverage.
@@ -1201,15 +1289,12 @@ torch_tpu_py_test(
         # timeout.
         "--max_samples_per_op_dtype=5",
     ],
+    compatible_accelerators = tpus(only = ["v5e"]),
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v5lite",
-    ],
     shard_count = 50,
     tags = _OSS_GOLDEN_TAGS,
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1512,11 +1597,18 @@ torch_tpu_py_test(
     name = "ops_unit_test",
     timeout = "long",  # Needed for asan.
     srcs = ["ops_unit_test.py"],
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     main = "ops_unit_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 50,
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
@@ -1550,13 +1642,10 @@ torch_tpu_py_test(
     name = "sparse_dense_matmul_test",
     timeout = "long",
     srcs = ["sparse_dense_matmul_test.py"],
+    # Requires SparseCore accelerator, which is not available on TPU v5e and below.
+    compatible_accelerators = SPARSECORE_TPUS,
     main = "sparse_dense_matmul_test.py",
     shard_count = 4,
-    tags = [
-        # Requires SparseCore accelerator, which is not available on TPU v5e and below.
-        "fails-on-tpu-v5",
-        "requires-tpu-v5p",
-    ],
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -1573,12 +1662,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sparse_gather_test",
     srcs = ["sparse_gather_test.py"],
+    # Requires SparseCore accelerator, which is not available on TPU v5e and below.
+    compatible_accelerators = SPARSECORE_TPUS,
     main = "sparse_gather_test.py",
-    tags = [
-        # Requires SparseCore accelerator, which is not available on TPU v5e and below.
-        "fails-on-tpu-v5",
-        "requires-tpu-v5p",
-    ],
     deps = [
         ":op_testing",
         ":seed_test_utils",
@@ -1593,13 +1679,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sparse_iota_test",
     srcs = ["sparse_iota_test.py"],
+    # Requires SparseCore accelerator, which is not available on TPU v5e and below.
+    compatible_accelerators = tpus(exclude = ["v5"]),
     main = "sparse_iota_test.py",
-    tags = [
-        # Requires SparseCore accelerator, which is not available on TPU v5e and below.
-        "fails-on-tpu-v5",
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x",
-    ],
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
+        reason = "Keeps the pre-migration v7x placement in google3.",
+    ),
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -1613,13 +1699,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sparse_map_row_test",
     srcs = ["sparse_map_row_test.py"],
+    # Requires SparseCore accelerator, which is not available on TPU v5e and below.
+    compatible_accelerators = tpus(exclude = ["v5"]),
     main = "sparse_map_row_test.py",
-    tags = [
-        # Requires SparseCore accelerator, which is not available on TPU v5e and below.
-        "fails-on-tpu-v5",
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x",
-    ],
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
+        reason = "Keeps the pre-migration v7x placement in google3.",
+    ),
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -1634,13 +1720,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sparse_dense_matmul_stacking_ops_test",
     srcs = ["sparse_dense_matmul_stacking_ops_test.py"],
+    # Requires SparseCore accelerator, which is not available on TPU v5e and below.
+    compatible_accelerators = tpus(exclude = ["v5"]),
     main = "sparse_dense_matmul_stacking_ops_test.py",
-    tags = [
-        # Requires SparseCore accelerator, which is not available on TPU v5e and below.
-        "fails-on-tpu-v5",
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x",
-    ],
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
+        reason = "Keeps the pre-migration v7x placement in google3.",
+    ),
     deps = [
         ":op_testing",
         ":oss_utils",
@@ -1668,20 +1754,20 @@ torch_tpu_py_test(
     name = "ops_unit_test_tier3_cache",
     timeout = "long",  # Needed for asan.
     srcs = ["ops_unit_test.py"],
+    # Numeric divergence in scaled_mm on TPU v7.
+    compatible_accelerators = tpus(exclude = ["v7"]),
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/my_cache",
     },
     main = "ops_unit_test.py",
     shard_count = 50,
     tags = [
-        "fails-on-tpu-v7",  # Numeric divergence in scaled_mm on TPU v7.
         # Runs in the .opt presubmit. The cache code has no
         # compilation-mode-specific logic, and :ops_unit_test already runs
         # ops_unit_test.py in fastbuild and ASAN.
         "nofastbuild",
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":op_testing",
@@ -1710,14 +1796,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "compiler_option_test",
     srcs = ["compiler_option_test.py"],
+    compatible_accelerators = tpus(),
     main = "compiler_option_test.py",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Load balancing",
-    ),
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    )),
     deps = [
         ":op_testing",
         "//csrc/eager:tpu_aten_kernels",
@@ -1731,15 +1815,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "index_put_op_test",
     srcs = ["index_put_op_unit_test.py"],
+    compatible_accelerators = tpus(),
     main = "index_put_op_unit_test.py",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Load balancing",
-    ),
+    )),
     shard_count = 20,
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":op_testing",
         "//csrc/eager:tpu_aten_kernels",
@@ -1753,7 +1835,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fused_adam_test",
     srcs = ["fused_adam_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -1766,7 +1848,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fused_adamw_test",
     srcs = ["fused_adamw_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -1780,9 +1862,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "nn_test",
     srcs = ["nn_test.py"],
+    compatible_accelerators = tpus(),
     tags = [
         "notsan",  # TODO: fix the test in tsan mode.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":seed_test_utils",
@@ -1799,13 +1881,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "tensor_test",
     srcs = ["tensor_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    compatible_accelerators = tpus(),
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Load balancing",
-    ),
+    )),
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":seed_test_utils",
@@ -1823,13 +1905,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "jagged_tensor_test",
     srcs = ["jagged_tensor_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    compatible_accelerators = tpus(),
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Load balancing",
-    ),
+    )),
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":seed_test_utils",
@@ -1845,9 +1927,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fp4_test",
     srcs = ["fp4_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         ":quantize_utils",
         ":seed_test_utils",
@@ -1881,10 +1961,6 @@ torch_tpu_py_test(
     args = [
         "--test_mode=cpu",
     ],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
-        reason = "Load balancing",
-    ),
     tags = [
     ],
     deps = [
@@ -1903,6 +1979,7 @@ torch_tpu_py_test(
     args = [
         "--test_mode=tpu",
     ],
+    compatible_accelerators = tpus(),
     env = {
         "TORCH_SHOW_CPP_STACKTRACES": "0",
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
@@ -1911,7 +1988,6 @@ torch_tpu_py_test(
     shard_count = 4,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":error_testing",
@@ -1935,6 +2011,7 @@ torch_tpu_py_test(
     args = [
         "--test_mode=tpu",
     ],
+    compatible_accelerators = tpus(),
     env = {
         "TORCH_SHOW_CPP_STACKTRACES": "0",
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
@@ -1942,7 +2019,6 @@ torch_tpu_py_test(
     main = "tpu_errors_test.py",
     tags = [
         "nosan",  # *san builds are low-value for error tests.
-        "requires-tpu-v5lite",
     ] + if_oss(
         # TODO: b/567928058 - test_mm_with_oom_result fails on the RBE v5e
         # workers, so run it on the self-hosted runners until that's fixed.
@@ -1985,12 +2061,12 @@ torch_tpu_py_test(
     args = [
         "--test_mode=cov",
     ],
+    compatible_accelerators = tpus(),
     env = TEST_COV_ENV,
     main = "errors_test.py",
     notap = "Run as a data dep by :error_coverage_test.",
     tags = [
         "nosan",  # *san builds are low-value for error tests.
-        "requires-tpu-v5lite",
     ],
     visibility = ["//:__subpackages__"],
     deps = [
@@ -2016,12 +2092,12 @@ torch_tpu_py_test(
     args = [
         "--test_mode=cov",
     ],
+    compatible_accelerators = tpus(),
     env = TEST_COV_ENV,
     main = "tpu_errors_test.py",
     notap = "Run as a data dep by :error_coverage_test.",
     tags = [
         "nosan",  # *san builds are low-value for error tests.
-        "requires-tpu-v5lite",
     ],
     visibility = ["//:__subpackages__"],
     deps = [
@@ -2094,7 +2170,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "errors_cpp_context_test",
     srcs = ["errors_cpp_context_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
@@ -2107,14 +2183,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "booleans_test",
     srcs = ["booleans_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    compatible_accelerators = tpus(),
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Load balancing",
-    ),
-    # args = [],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    )),
     deps = [
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
@@ -2127,9 +2200,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "backwards_test",
     srcs = ["backwards_test.py"],
+    compatible_accelerators = tpus(),
     tags = [
         "notsan",  # TODO: fix the test in tsan mode.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":seed_test_utils",
@@ -2146,13 +2219,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "untyped_storage_test",
     srcs = ["untyped_storage_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    compatible_accelerators = tpus(),
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Load balancing",
-    ),
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    )),
     deps = [
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
@@ -2167,7 +2238,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "view_test",
     srcs = ["view_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
@@ -2184,13 +2255,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "zero_size_test",
     srcs = ["zero_size_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    compatible_accelerators = tpus(),
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Load balancing",
-    ),
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    )),
     deps = [
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
@@ -2203,8 +2272,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "rng_test",
     srcs = ["rng_test.py"],
+    compatible_accelerators = tpus(),
     main = "rng_test.py",
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2220,8 +2289,8 @@ torch_tpu_py_test(
     name = "rng_cuda_ref_test",
     srcs = ["rng_cuda_ref_test.py"],
     args = ["--backend=tpu"],
+    compatible_accelerators = tpus(),
     main = "rng_cuda_ref_test.py",
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":accelerator_test_utils",
         ":oss_utils",
@@ -2263,13 +2332,8 @@ torch_tpu_py_test(
     name = "rng_multi_device_test",
     srcs = ["rng_multi_device_test.py"],
     args = ["--backend=tpu"],
+    compatible_accelerators = tpus(min_chips = 4),
     main = "rng_multi_device_test.py",
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
-    ],
     deps = [
         ":accelerator_test_utils",
         ":seed_test_utils",
@@ -2311,12 +2375,9 @@ torch_tpu_py_test(
     name = "rng_multiprocess_test",
     srcs = ["rng_multiprocess_test.py"],
     args = ["--backend=tpu"],
+    compatible_accelerators = tpus(min_chips = 4),
     main = "rng_multiprocess_test.py",
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         # Spawning 8 PyTorch processes in *san exceeds Forge's 28GB container
         # memory limit; this is an infra constraint rather than a code defect.
         "noasan",  # See comment above.
@@ -2365,8 +2426,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "accelerator_api_test",
     srcs = ["accelerator_api_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     main = "accelerator_api_test.py",
-    tags = ["requires-tpu-v5lite:8"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2385,8 +2446,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "synchronize_test",
     srcs = ["synchronize_test.py"],
+    compatible_accelerators = tpus(),
     main = "synchronize_test.py",
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2401,8 +2462,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "internal_sync_test",
     srcs = ["internal_sync_test.py"],
+    compatible_accelerators = tpus(),
     main = "internal_sync_test.py",
-    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -2415,14 +2476,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "set_test",
     srcs = ["set_test.py"],
+    compatible_accelerators = tpus(),
     main = "set_test.py",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Load balancing",
-    ),
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    )),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2435,8 +2494,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "execution_mode_test",
     srcs = ["execution_mode_test.py"],
+    compatible_accelerators = tpus(),
     main = "execution_mode_test.py",
-    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -2449,9 +2508,9 @@ torch_tpu_py_test(
     name = "inplace_buffer_donation_test",
     size = "medium",
     srcs = ["inplace_buffer_donation_test.py"],
+    compatible_accelerators = tpus(),
     main = "inplace_buffer_donation_test.py",
     shard_count = 4,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2465,8 +2524,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "adamw_test",
     srcs = ["adamw_test.py"],
+    compatible_accelerators = tpus(),
     main = "adamw_test.py",
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2482,8 +2541,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "patch_test",
     srcs = ["patch_test.py"],
+    compatible_accelerators = tpus(),
     main = "patch_test.py",
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2499,10 +2558,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dynamism_test",
     srcs = ["dynamism_test.py"],
+    compatible_accelerators = tpus(),
     main = "dynamism_test.py",
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":op_testing",
         ":seed_test_utils",
@@ -2521,12 +2578,19 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dynamic_ops_test",
     srcs = ["dynamic_ops_test.py"],
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "all"},
     main = "dynamic_ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     shard_count = 8,
     deps = [
         ":op_testing",
@@ -2544,12 +2608,19 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "ops_unit_test_static",
     srcs = ["ops_unit_test_static.py"],
+    compatible_accelerators = tpus(only = [
+        "v5e",
+        "v6e",
+    ]),
     env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "none"},
     main = "ops_unit_test_static.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -2563,9 +2634,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "compilation_cache_stress_test",
     srcs = ["compilation_cache_stress_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2578,10 +2647,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "rng_stress_test",
     srcs = ["rng_stress_test.py"],
+    compatible_accelerators = tpus(),
     shard_count = 4,
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2595,10 +2662,10 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dynamism_model_test",
     srcs = ["dynamism_model_test.py"],
+    compatible_accelerators = tpus(),
     main = "dynamism_model_test.py",
     tags = [
         "notsan",  # TODO(b/584628465): fix the MarkDynamic data race.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":seed_test_utils",
@@ -2613,14 +2680,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "precision_test",
     srcs = ["precision_test.py"],
+    compatible_accelerators = tpus(),
     main = "precision_test.py",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Load balancing",
-    ),
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    )),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2635,9 +2700,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "eager_debug_test",
     srcs = ["eager_debug_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2650,10 +2713,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "async_transfer_test",
     srcs = ["async_transfer_test.py"],
+    compatible_accelerators = tpus(),
     main = "async_transfer_test.py",
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2679,10 +2740,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "autoload_test_tpu",
     srcs = ["autoload_tpu_test.py"],
+    compatible_accelerators = tpus(),
     main = "autoload_tpu_test.py",
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -2713,11 +2772,9 @@ torch_tpu_py_test(
     # The flag is memoized on first use, so it's set on the command line rather
     # than at runtime.
     args = ["--torch_tpu_internal_mlir_tracebacks=true"],
+    compatible_accelerators = tpus(),
     # In OSS, C++ flags can't be passed to Python tests on the command line.
     notest_oss = True,  # NOTEST_OSS_OK=The tested flag is only meant for Google internal use, and thus doesn't need to work in OSS.
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2730,9 +2787,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "amp_test",
     srcs = ["amp_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2746,13 +2801,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "tpu_backend_config_test",
     srcs = ["tpu_backend_config_test.py"],
+    compatible_accelerators = tpus(),
     # To exercise global APIs that are meant to be set once, keep `shard_count` identical to
     # the number of test cases so that each process runs exactly one test case.
     # TODO: b/517257494 - write test properly to run one test case per process without
     # relying on shard count.
     shard_count = 2,
     strict = True,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2773,10 +2828,8 @@ test_suite(
 torch_tpu_py_test(
     name = "tracing_test_tpu",
     srcs = ["tracing_test.py"],
+    compatible_accelerators = tpus(),
     main = "tracing_test.py",
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2798,7 +2851,7 @@ test_suite(
 torch_tpu_py_test(
     name = "batch_transfer_test",
     srcs = ["batch_transfer_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2949,7 +3002,7 @@ torch_tpu_oss_torch_example(
 torch_tpu_py_test(
     name = "scan_test",
     srcs = ["scan_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2966,8 +3019,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "lstm_test",
     srcs = ["lstm_test.py"],
+    compatible_accelerators = tpus(),
     shard_count = 4,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2981,8 +3034,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "gru_test",
     srcs = ["gru_test.py"],
+    compatible_accelerators = tpus(),
     shard_count = 4,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2996,7 +3049,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fused_adagrad_test",
     srcs = ["fused_adagrad_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -3009,7 +3062,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fused_sgd_test",
     srcs = ["fused_sgd_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -3022,7 +3075,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "empty_test",
     srcs = ["empty_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -3036,7 +3089,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "tensor_factories_test",
     srcs = ["tensor_factories_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -3049,7 +3102,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fused_moving_avg_obs_fq_helper_test",
     srcs = ["fused_moving_avg_obs_fq_helper_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -3061,7 +3114,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "large_invert_non_strided_slice_test",
     srcs = ["large_invert_non_strided_slice_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -3074,8 +3127,19 @@ torch_tpu_py_test(
     name = "view_narrow_dtype_test",
     size = "medium",
     srcs = ["view_narrow_dtype_test.py"],
+    compatible_accelerators = tpus(only = ["v6e"]),
     main = "view_narrow_dtype_test.py",
-    run_on_accelerators = ["requires-tpu-v6e"],
+    run_on = if_oss(
+        run_on_config(
+            postsubmit = [],
+            presubmit = [],
+            reason = "Keeps the pre-migration nightly-only OSS schedule.",
+        ),
+        run_on_config(
+            presubmit = [],
+            reason = "Avoid long Forge queue.",
+        ),
+    ),
     shard_count = 2,
     tags = ["nofastbuild"],
     deps = [
@@ -3202,6 +3266,8 @@ torch_tpu_py_test(
     name = "error_coverage_test",
     timeout = "long",
     srcs = ["error_coverage_test.py"],
+    # collective_errors_test_cov needs 8 chips.
+    compatible_accelerators = tpus(min_chips = 8),
     data = [
         "error_coverage_data.yaml",
         ":errors_test_cov",
@@ -3211,21 +3277,15 @@ torch_tpu_py_test(
     ],
     tags = if_oss(
         [
-            # collective_errors_test_cov needs all 8 chips.
-            "exclusive",
             # Some error tests need PyTorch features (e.g. activation offloading)
             # that only the newest supported PyTorch has. The OSS presubmit job
             # with the newest dependencies runs this test on every PR.
             "requires-newest-deps",
-            # The baseline is for TPU v5e, and collective_errors_test_cov needs
-            # 8 chips.
-            "fails-on-tpu-v7",
         ],
         [],
     ) + [
         "nofastbuild",
         "nosan",  # *san builds are low-value for error tests.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":error_coverage_lib",
@@ -3261,7 +3321,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "parameter_tying_test",
     srcs = ["parameter_tying_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",

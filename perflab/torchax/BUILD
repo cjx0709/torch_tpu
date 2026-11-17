@@ -17,6 +17,10 @@
 # gjh8
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -86,6 +90,7 @@ torch_tpu_py_test(
     # triggering "RuntimeError: torch.register_privateuse1_backend() has already been set!
     # Current backend: tpu".
     autoload = False,
+    compatible_accelerators = tpus(),
     env = {
         "BENCHMARK_PLATFORM": "v5e_1x1",
     },
@@ -97,7 +102,6 @@ torch_tpu_py_test(
         "nofastbuild",  # Benchmark.
         "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":torchax_device_ops",
@@ -138,6 +142,7 @@ torch_tpu_py_test(
         "--enable_xprof=true",
     ],
     autoload = False,
+    compatible_accelerators = tpus(only = ["v7x"]),
     env = {
         "BENCHMARK_PLATFORM": "v7_1x1x1",
     },
@@ -151,7 +156,6 @@ torch_tpu_py_test(
         "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x",
     ],
     deps = [
         ":torchax_device_ops",

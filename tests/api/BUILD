@@ -19,6 +19,10 @@
 """Tests and tools that guard the TorchTPU public API surface."""
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "oss_target",
     "torch_tpu_package_end",
@@ -99,6 +103,9 @@ oss_target(
     torch_tpu_py_test,
     name = "tt_apis_test",
     srcs = ["tt_apis_test.py"],
+    # Must run on TPU hardware for C++ extension to be loaded into memory, enabling memory
+    # reflection to discover all public runtime APIs.
+    compatible_accelerators = tpus(),
     data = [
         "tt_apis.yaml",
         "//csrc:all_cpp_files_recursive",
@@ -107,9 +114,6 @@ oss_target(
     tags = [
         # Only the CI jobs with the newest supported dependencies run it.
         "requires-newest-deps",
-        # Must run on TPU hardware for C++ extension to be loaded into memory, enabling memory
-        # reflection to discover all public runtime APIs.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":scan_tt_apis_lib",

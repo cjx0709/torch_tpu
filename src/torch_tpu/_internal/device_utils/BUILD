@@ -18,6 +18,10 @@
 # pganssle-google
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -51,9 +55,7 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "annotations_test",
     srcs = ["annotations_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         ":annotations",
         "//shims/absl_py/testing:absltest",
