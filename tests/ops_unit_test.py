@@ -20900,6 +20900,143 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       self.assertIn(cudnn_attention, ops3_train)
       self.assertNotIn(fused_overrideable, ops3_train)
 
+      # Case 4: single-split-tile (<= 256) with head_dim == 128 routes to
+      # OVERRIDEABLE when group_live_score_bytes fits in VMEM, and multi-block
+      # (> 256) routes to CUDNN_ATTENTION (issue #6304).
+      for shape, expected_op, unexpected_op in (
+          ((2, 8, 256, 128), fused_overrideable, cudnn_attention),
+          ((3264, 8, 128, 128), fused_overrideable, cudnn_attention),
+          ((1632, 8, 256, 128), fused_overrideable, cudnn_attention),
+          ((8192, 8, 51, 128), fused_overrideable, cudnn_attention),
+          ((2, 8, 512, 128), cudnn_attention, fused_overrideable),
+          ((816, 8, 512, 128), cudnn_attention, fused_overrideable),
+      ):
+        with self.subTest(case="head_dim_128", shape=shape):
+          q = torch.randn(*shape, dtype=torch.bfloat16, device="tpu")
+          k = torch.randn(*shape, dtype=torch.bfloat16, device="tpu")
+          v = torch.randn(*shape, dtype=torch.bfloat16, device="tpu")
+          ops = dispatched_ops(q, k, v)
+          self.assertIn(expected_op, ops)
+          self.assertNotIn(unexpected_op, ops)
+
+      # Case 5: sub-tile head_dim (< 128) prefers OVERRIDEABLE within a single
+      # split tile (<= 256) or when total score fits in VMEM and FlashAttention
+      # lane padding meets or exceeds the score footprint, and falls back to
+      # CUDNN_ATTENTION on multi-block (> 256) shapes that exceed VMEM or have
+      # smaller lane padding than score.
+      for shape, expected_op, unexpected_op in (
+          ((3264, 8, 128, 32), fused_overrideable, cudnn_attention),
+          ((1632, 8, 256, 32), fused_overrideable, cudnn_attention),
+          ((1, 4, 512, 32), fused_overrideable, cudnn_attention),
+          ((32, 12, 512, 32), cudnn_attention, fused_overrideable),
+          ((816, 8, 512, 32), cudnn_attention, fused_overrideable),
+          ((408, 8, 1024, 32), cudnn_attention, fused_overrideable),
+          ((3264, 8, 128, 64), fused_overrideable, cudnn_attention),
+          ((1632, 8, 256, 64), fused_overrideable, cudnn_attention),
+          ((32, 16, 256, 80), fused_overrideable, cudnn_attention),
+          ((2, 16, 512, 80), cudnn_attention, fused_overrideable),
+          ((32, 16, 512, 80), cudnn_attention, fused_overrideable),
+          ((816, 8, 512, 64), cudnn_attention, fused_overrideable),
+      ):
+        with self.subTest(case="sub_tile_head_dim", shape=shape):
+          q = torch.randn(*shape, dtype=torch.bfloat16, device="tpu")
+          k = torch.randn(*shape, dtype=torch.bfloat16, device="tpu")
+          v = torch.randn(*shape, dtype=torch.bfloat16, device="tpu")
+          ops = dispatched_ops(q, k, v)
+          self.assertIn(expected_op, ops)
+          self.assertNotIn(unexpected_op, ops)
+
+      # Case 6: training (requires_grad=True) within <= 256 still falls back to
+      # CUDNN_ATTENTION when total score bytes exceed VMEM.
+      q6 = torch.randn(
+          1632,
+          8,
+          256,
+          64,
+          dtype=torch.bfloat16,
+          device="tpu",
+          requires_grad=True,
+      )
+      k6 = torch.randn(
+          1632,
+          8,
+          256,
+          64,
+          dtype=torch.bfloat16,
+          device="tpu",
+          requires_grad=True,
+      )
+      v6 = torch.randn(
+          1632,
+          8,
+          256,
+          64,
+          dtype=torch.bfloat16,
+          device="tpu",
+          requires_grad=True,
+      )
+      ops6 = dispatched_ops(q6, k6, v6)
+      self.assertIn(cudnn_attention, ops6)
+      self.assertNotIn(fused_overrideable, ops6)
+
+  @parameterized.product(
+      use_compile=[False, True],
+  )
+  def test_sdpa_shlo_sub_tile_aligned_forward_and_backward(
+      self,
+      use_compile: bool,
+  ):
+    """Verifies SHLO SDPA sub-tile all-masked row stays finite in fwd/bwd."""
+    seq_len, head_dim = 128, 32
+    torch.manual_seed(42)
+
+    q_tpu = torch.randn(
+        2, 4, seq_len, head_dim, dtype=torch.bfloat16, device="tpu"
+    ).requires_grad_(True)
+    k_tpu = torch.randn(
+        2, 4, seq_len, head_dim, dtype=torch.bfloat16, device="tpu"
+    ).requires_grad_(True)
+    v_tpu = torch.randn(
+        2, 4, seq_len, head_dim, dtype=torch.bfloat16, device="tpu"
+    ).requires_grad_(True)
+    grad_out_tpu = torch.randn(
+        2, 4, seq_len, head_dim, dtype=torch.bfloat16, device="tpu"
+    )
+    attn_mask_tpu = torch.zeros(
+        2, 1, seq_len, seq_len, dtype=torch.bfloat16, device="tpu"
+    )
+    attn_mask_tpu[0, 0, -1, :] = float("-inf")
+    torch.accelerator.synchronize()
+
+    def run_sdpa(q, k, v, mask):
+      with torch.nn.attention.sdpa_kernel(
+          torch.nn.attention.SDPBackend.OVERRIDEABLE
+      ):
+        return torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=mask
+        )
+
+    if use_compile:
+      compiled_fn = torch.compile(run_sdpa, backend="tpu", dynamic=False)
+      out_tpu = compiled_fn(q_tpu, k_tpu, v_tpu, attn_mask_tpu)
+      dq_tpu, dk_tpu, dv_tpu = torch.autograd.grad(
+          out_tpu, (q_tpu, k_tpu, v_tpu), grad_out_tpu
+      )
+    else:
+      with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+        out_tpu = run_sdpa(q_tpu, k_tpu, v_tpu, attn_mask_tpu)
+        dq_tpu, dk_tpu, dv_tpu = torch.autograd.grad(
+            out_tpu, (q_tpu, k_tpu, v_tpu), grad_out_tpu
+        )
+    torch.accelerator.synchronize()
+
+    for tensor in (out_tpu, dq_tpu, dk_tpu, dv_tpu):
+      self.assertTrue(torch.isfinite(tensor.cpu()).all())
+    self.assertEqual(
+        out_tpu.cpu()[0, :, -1, :],
+        torch.zeros(4, head_dim, dtype=torch.bfloat16),
+    )
+
   @parameterized.product(
       backend=[
           torch.nn.attention.SDPBackend.FLASH_ATTENTION,
@@ -21492,6 +21629,24 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           torch.bfloat16,
           False,
           None,
+      ),
+      (
+          "overrideable_sub_tile_32_bfloat16",
+          32,
+          4,
+          4,
+          torch.bfloat16,
+          False,
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      ),
+      (
+          "overrideable_sub_tile_64_bfloat16",
+          64,
+          4,
+          4,
+          torch.bfloat16,
+          False,
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
       ),
       ("math_float32_mha", 24, 4, 4, torch.float32, False, None),
       ("math_float32_gqa", 24, 4, 2, torch.float32, True, None),
