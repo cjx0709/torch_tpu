@@ -2736,10 +2736,12 @@ torch_tpu_py_test(
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",  # build_cleaner: keep
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )
 
