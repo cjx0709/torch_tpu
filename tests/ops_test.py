@@ -84,23 +84,52 @@ def _unbounded_dynamic_hits() -> int:
   return torch.tpu._get_cache_stats().num_unbounded_dynamic_hits  # pylint: disable=protected-access
 
 
+def _runs_all_samples() -> bool:
+  """Returns whether the test runs the samples of all dtypes, without a limit."""
+  return (
+      "all" in flags.FLAGS["dtypes"].value
+      and flags.FLAGS["max_samples_per_op_dtype"].value < 0
+  )
+
+
 def also_run_static(func):
-  """Also runs the test in ops_test_static, asserting no dynamic kernels ran."""
+  """Also runs the test in ops_test_static, asserting no dynamic kernels ran.
+
+  In the other targets, which load the dynamic kernels enabled by default, the
+  test fails if no dynamic kernel served any of its samples, so that the
+  kernels can't silently lose their coverage.
+
+  Args:
+    func: The test method of an op with dynamic kernels enabled by default.
+
+  Returns:
+    The wrapped test method.
+  """
 
   @functools.wraps(func)
   def wrapper(self, *args, **kwargs):
-    if not _unbounded_dynamic_kernels_disabled():
-      return func(self, *args, **kwargs)
-
     hits_before = _unbounded_dynamic_hits()
     result = func(self, *args, **kwargs)
     torch.accelerator.synchronize()
-    self.assertEqual(
-        _unbounded_dynamic_hits() - hits_before,
-        0,
-        "Lookups served by unbounded dynamic kernels, although"
-        f" {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR} disables them.",
-    )
+    hits = _unbounded_dynamic_hits() - hits_before
+    if _unbounded_dynamic_kernels_disabled():
+      self.assertEqual(
+          hits,
+          0,
+          "Lookups served by unbounded dynamic kernels, although"
+          f" {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR} disables them.",
+      )
+    # Samples only run on the TPU when subtests run (e.g. not when generating
+    # goldens), and the served ones may be filtered out by the dtypes or
+    # limited by the number of samples.
+    elif self._subtests_run and _runs_all_samples():
+      self.assertGreater(
+          hits,
+          0,
+          f"No unbounded dynamic kernel served {self._testMethodName}, which"
+          " is marked with @also_run_static: its dynamic kernels have no"
+          " coverage.",
+      )
     return result
 
   setattr(wrapper, _ALSO_RUN_STATIC_ATTR, True)
