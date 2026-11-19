@@ -15,6 +15,7 @@
 """Unit tests for standalone distributed benchmark runner."""
 
 from collections.abc import Iterator
+from collections.abc import Sequence
 from collections.abc import Set
 import contextlib
 import importlib.util
@@ -49,6 +50,7 @@ from perflab import workload as workload_lib
 from perflab.tests import fakes
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
+from tests.distributed import worker_supervisor
 
 
 def setUpModule():
@@ -76,8 +78,11 @@ def _single_rank_gloo_env(rank: int = 0) -> Iterator[None]:
         torch.distributed.destroy_process_group()
 
 
-def _in_process_dist_run(nprocs: int, fn: Any, *args: Any) -> None:
+def _in_process_dist_run(
+    nprocs: int, fn: Any, *args: Any, timeout_seconds: float | None = None
+) -> None:
   """In-process stand-in for `dist_run` that executes rank 0 over Gloo."""
+  del timeout_seconds
   assert nprocs == 1
   with _single_rank_gloo_env(rank=0):
     fn(*args)
@@ -86,12 +91,14 @@ def _in_process_dist_run(nprocs: int, fn: Any, *args: Any) -> None:
 class _FakeDistRun:
   """Stateful fake for `distributed_utils.dist_run`.
 
-  Records the spec name of every dispatched target, simulates rank 0 writing
-  `METRICS` once every rank has measured for specs listed in `measured_specs`,
-  simulates a worker rank raising (as surfaced by `torch.multiprocessing.spawn`)
-  for specs listed in `failing_specs`, and simulates a factory raising
-  `UnsupportedBenchmark` for specs listed in `unsupported_specs`. A spec in both
-  `measured_specs` and `failing_specs` fails after measuring, e.g. in teardown.
+  Records the spec name and timeout of every dispatched target, simulates rank 0
+  writing `METRICS` once every rank has measured for specs listed in
+  `measured_specs`, simulates a worker rank raising (as surfaced by
+  `torch.multiprocessing.spawn`) for specs listed in `failing_specs`, simulates
+  the workers running past the timeout for specs listed in `timed_out_specs`,
+  and simulates a factory raising `UnsupportedBenchmark` for specs listed in
+  `unsupported_specs`. A spec in `measured_specs` that also fails or times out
+  does so after measuring, e.g. in teardown.
   """
 
   METRICS = metrics_lib.PerformanceMetrics(
@@ -100,14 +107,17 @@ class _FakeDistRun:
 
   def __init__(
       self,
-      failing_specs: Set[str],
+      failing_specs: Set[str] = frozenset(),
       unsupported_specs: Set[str] = frozenset(),
       measured_specs: Set[str] = frozenset(),
+      timed_out_specs: Set[str] = frozenset(),
   ):
     self._failing_specs = failing_specs
     self._unsupported_specs = unsupported_specs
     self._measured_specs = measured_specs
+    self._timed_out_specs = timed_out_specs
     self.ran = []
+    self.timeouts: list[float | None] = []
 
   def __call__(
       self,
@@ -118,15 +128,22 @@ class _FakeDistRun:
       platform_name,
       skip_reason_file,
       metrics_file,
+      *,
+      timeout_seconds=None,
   ):
     del nproc_per_node, fn, mode_value, platform_name
     self.ran.append(spec_name)
+    self.timeouts.append(timeout_seconds)
     if spec_name in self._measured_specs:
       distributed_runner._write_metrics(metrics_file, self.METRICS)
     if spec_name in self._unsupported_specs:
       # What rank 0 does when the factory raises UnsupportedBenchmark.
       with open(skip_reason_file, "w") as f:
         f.write(f"{spec_name} needs more chips")
+    if spec_name in self._timed_out_specs:
+      raise worker_supervisor.WorkerTimeoutError(
+          "Distributed workers did not finish by the deadline."
+      )
     if spec_name in self._failing_specs:
       raise mp.ProcessRaisedException(
           f"RuntimeError: factory failed for {spec_name}",
@@ -247,12 +264,12 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     )
 
     # No filter returns all modes
-    targets = distributed_runner.resolve_benchmark_targets(test_filter=None)
+    targets = distributed_runner._resolve_benchmark_targets(test_filter=None)
     self.assertLen(targets, len(common.RunMode))
     self.assertEqual(targets[0][0].name, "llama_8b_inference")
 
     # Exact target_name match
-    targets = distributed_runner.resolve_benchmark_targets(
+    targets = distributed_runner._resolve_benchmark_targets(
         test_filter=(
             "llama_8b_inference_eager_default"
             " llama_8b_inference_eager_optimized"
@@ -263,7 +280,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(targets[1][1], common.RunMode.EAGER_OPTIMIZED)
 
     # Duplicate targets preserved in order
-    targets = distributed_runner.resolve_benchmark_targets(
+    targets = distributed_runner._resolve_benchmark_targets(
         test_filter=(
             "llama_8b_inference_eager_default llama_8b_inference_eager_default"
         )
@@ -275,13 +292,13 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     # pyformat: disable
     # Spec name without mode suffix throws ValueError
     with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=Runner target resolution validation.
-      distributed_runner.resolve_benchmark_targets(
+      distributed_runner._resolve_benchmark_targets(
           test_filter="llama_8b_inference"
       )
 
     # Invalid target throws ValueError
     with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=Runner target resolution validation.
-      distributed_runner.resolve_benchmark_targets(
+      distributed_runner._resolve_benchmark_targets(
           test_filter="invalid_target_xyz"
       )
     # pyformat: enable
@@ -292,7 +309,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
       registry_lib.REGISTRY[name] = fakes.tiny_spec(name)
 
     # Targets are in token order, and a wildcard's matches in name order
-    targets = distributed_runner.resolve_benchmark_targets(
+    targets = distributed_runner._resolve_benchmark_targets(
         test_filter="llama_8b_inference_compiled *_eager_default"
     )
     self.assertEqual(
@@ -305,7 +322,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     )
 
     # A wildcard can match every mode of a benchmark, in run mode order
-    targets = distributed_runner.resolve_benchmark_targets(
+    targets = distributed_runner._resolve_benchmark_targets(
         test_filter="gemma_2b_training_*"
     )
     self.assertEqual(
@@ -316,7 +333,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     # pyformat: disable
     # Wildcard pattern matching no target throws ValueError
     with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=Runner target resolution validation.
-      distributed_runner.resolve_benchmark_targets(
+      distributed_runner._resolve_benchmark_targets(
           test_filter="*_no_such_mode"
       )
     # pyformat: enable
@@ -593,7 +610,10 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         platform_val,
         unused_skip_file,
         unused_metrics_file,
+        *,
+        timeout_seconds=None,
     ):
+      del timeout_seconds
       dispatched.append((nprocs, spec_name, mode_val, platform_val))
 
     # Single-host TPU (nnodes=1, nprocs_per_node=8) populates TPU launch env.
@@ -673,7 +693,10 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         platform_val,
         unused_skip_file,
         unused_metrics_file,
+        *,
+        timeout_seconds=None,
     ):
+      del timeout_seconds
       dispatched.append((nprocs, spec_name, mode_val, platform_val))
 
     # Simulate a GPU host with TORCH_DEVICE_BACKEND_AUTOLOAD=0, where
@@ -770,6 +793,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     }
     with (
         mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.object(distributed_runner, "_IMPORT_FAILURES", (failure,)),
         mock.patch.dict(
             os.environ,
             {
@@ -783,9 +807,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     ):
       # pyformat: disable
       with self.assertRaises(SystemExit) as exit_cm:  # ASSERT_RAISES_OK=Runner must exit non-zero when a model fails to import.
-        distributed_runner.main(
-            ["distributed_runner"], import_failures=(failure,)
-        )
+        distributed_runner.main(["distributed_runner"])
       # pyformat: enable
     return fake_dist_run, exit_cm.exception
 
@@ -1546,8 +1568,8 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     )
     seen_caches = []
 
-    def fake_dist_run(*args):
-      del args
+    def fake_dist_run(*args, **kwargs):
+      del args, kwargs
       inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
       tier2_cache = os.path.join(
           tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
@@ -1641,6 +1663,104 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(rank0["num_exported"], 0)
     self.assertEqual(rank1["num_exported"], 0)
+
+  def _run_main(self, dist_run: Any, specs: Sequence[str]) -> tuple[str, int]:
+    """Runs main() on the compiled target of each of `specs` with `dist_run`.
+
+    Returns:
+      The logs and the exit code of main().
+    """
+    registry = {
+        name: types.SimpleNamespace(
+            name=name, skipped_run_modes=frozenset(), microbenchmark_name=None
+        )
+        for name in specs
+    }
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": " ".join(
+                    f"{name}_compiled" for name in specs
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils,
+            "dist_run",
+            side_effect=dist_run,
+            autospec=True,
+        ),
+        self.assertLogs(level="INFO") as logs,
+    ):
+      try:
+        distributed_runner.main(["distributed_runner"])
+      except SystemExit as e:
+        return "\n".join(logs.output), e.code
+    return "\n".join(logs.output), 0
+
+  @parameterized.named_parameters(
+      ("default", None, 1800.0),
+      ("set", 120.5, 120.5),
+      ("zero_disables", 0.0, None),
+  )
+  def test_main_passes_target_timeout_to_dist_run(
+      self, flag_value, expected_timeout
+  ):
+    fake_dist_run = _FakeDistRun()
+    flag_overrides = (
+        {}
+        if flag_value is None
+        else {"distributed_target_timeout_seconds": flag_value}
+    )
+
+    with flagsaver.flagsaver(**flag_overrides):
+      self._run_main(fake_dist_run, ["healthy"])
+
+    self.assertEqual(fake_dist_run.timeouts, [expected_timeout])
+
+  def test_main_reports_timed_out_target_and_runs_the_next(self):
+    fake_dist_run = _FakeDistRun(
+        timed_out_specs={"hung"}, measured_specs={"healthy"}
+    )
+
+    with flagsaver.flagsaver(distributed_target_timeout_seconds=120.0):
+      logs, exit_code = self._run_main(fake_dist_run, ["hung", "healthy"])
+
+    self.assertEqual(exit_code, 1)
+    self.assertEqual(fake_dist_run.ran, ["hung", "healthy"])
+    self.assertEqual(
+        [(d.spec_name, d.succeeded) for d in self.exporter.exported],
+        [("hung", False), ("healthy", True)],
+    )
+    self.assertRegex(
+        logs, r"hung_compiled\s+TIMED_OUT\s+Did not finish within 120 s\."
+    )
+    self.assertRegex(logs, r"healthy_compiled\s+PASSED")
+    self.assertIn("1 passed, 0 failed, 0 skipped, 1 timed out", logs)
+    self.assertEqual(
+        _read_test_xml(self.xml_path),
+        {
+            "hung_compiled": ("FAILURE", "Did not finish within 120 s."),
+            "healthy_compiled": ("PASSED", ""),
+        },
+    )
+
+  def test_main_exports_metrics_of_target_that_timed_out_after_measuring(self):
+    fake_dist_run = _FakeDistRun(
+        timed_out_specs={"hung"}, measured_specs={"hung"}
+    )
+
+    logs, exit_code = self._run_main(fake_dist_run, ["hung"])
+
+    self.assertEqual(exit_code, 1)
+    self.assertEqual(
+        [(d.spec_name, d.succeeded, d.metrics) for d in self.exporter.exported],
+        [("hung", True, _FakeDistRun.METRICS)],
+    )
+    self.assertRegex(logs, r"hung_compiled\s+TIMED_OUT")
 
 
 if __name__ == "__main__":
