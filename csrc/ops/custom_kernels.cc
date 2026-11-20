@@ -35,17 +35,20 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/ops/op_builder_utils.h"
+#include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/PatternMatch.h"
@@ -425,10 +428,46 @@ bool ContainsSdyManualComputation(mlir::ModuleOp module) {
   return has_manual_computation;
 }
 
+// Imported operations already have JAX locations. A builder location only
+// labels the call, not its body. Compose names after partitioning so the HLO
+// round-trip cannot discard the caller's hierarchy.
+mlir::Location PrefixKernelLocation(mlir::Location location,
+                                    std::string_view prefix) {
+  if (auto named = mlir::dyn_cast<mlir::NameLoc>(location)) {
+    // XLA encodes op_type as a separate "type:" name around op_name.
+    // Preserve that marker and prefix the actual name inside it.
+    const auto name = named.getName().getValue();
+    if (name.split('@').first.ends_with(":")) {
+      return mlir::NameLoc::get(
+          named.getName(), PrefixKernelLocation(named.getChildLoc(), prefix));
+    }
+    return mlir::NameLoc::get(
+        mlir::StringAttr::get(location.getContext(),
+                              absl::StrCat(prefix, "/", named.getName().str())),
+        named.getChildLoc());
+  }
+  if (auto callsite = mlir::dyn_cast<mlir::CallSiteLoc>(location)) {
+    return mlir::CallSiteLoc::get(
+        PrefixKernelLocation(callsite.getCallee(), prefix),
+        callsite.getCaller());
+  }
+  if (auto fused = mlir::dyn_cast<mlir::FusedLoc>(location)) {
+    mlir::SmallVector<mlir::Location> locations;
+    for (mlir::Location child : fused.getLocations()) {
+      locations.push_back(PrefixKernelLocation(child, prefix));
+    }
+    return mlir::FusedLoc::get(location.getContext(), locations,
+                               fused.getMetadata());
+  }
+  return mlir::NameLoc::get(
+      mlir::StringAttr::get(location.getContext(), prefix), location);
+}
+
 absl::StatusOr<mlir::func::FuncOp> InjectCustomKernel(
     mlir::MlirBuilder& builder, mlir::ModuleOp custom_kernel,
     mlir::ArrayRef<mlir::Type> input_types,
-    std::optional<std::string_view> kernel_id_str = std::nullopt) {
+    std::optional<std::string_view> kernel_id_str = std::nullopt,
+    std::string_view scope_prefix = {}) {
   // TODO(elliotenglish): Currently symbolic shape export is unsupported when we
   // have a distributed kernel. The specialization code also doesn't understand
   // these constructs. Fix this when we implement distributed framework kernels.
@@ -445,6 +484,12 @@ absl::StatusOr<mlir::func::FuncOp> InjectCustomKernel(
                       client->GetTopologyDescription());
   TT_RETURN_IF_ERROR(PartitionGlobalToLocal(custom_kernel.getContext(),
                                             custom_kernel, client_topology));
+
+  if (!scope_prefix.empty()) {
+    custom_kernel.walk([scope_prefix](mlir::Operation* op) {
+      op->setLoc(PrefixKernelLocation(op->getLoc(), scope_prefix));
+    });
+  }
 
   // Move the main function into the builder's current module.
   mlir::ModuleOp module_op = GetModuleOp(builder);
@@ -559,7 +604,8 @@ class CustomKernelRegistry {
       // This change should be applied to the entire file.
       std::string_view kernel_key,
       absl::Span<const absl::Span<const int64_t>> input_dims,
-      absl::Span<const mlir::ElementType> input_dtypes) {
+      absl::Span<const mlir::ElementType> input_dtypes,
+      std::string_view kernel_id_str, std::string_view scope_prefix) {
     // Lock the registry while we retrieve the MLIR module string.
     std::string mlir_module_string;
     {
@@ -582,10 +628,6 @@ class CustomKernelRegistry {
         mlir::OwningOpRef<mlir::ModuleOp> deserialized_module,
         xla::ParseMlirModuleString(mlir_module_string, builder.getContext()));
 
-    // Get the name we want to give the custom kernel.
-    std::string kernel_id_str =
-        GetUniqueCustomKernelName(name, kernel_key, input_dims, input_dtypes);
-
     // Build mlir::Types for each input shape.
     mlir::SmallVector<mlir::Type> input_types;
     input_types.reserve(input_dims.size());
@@ -596,7 +638,7 @@ class CustomKernelRegistry {
 
     // Specialize the custom kernel and inject it into the builder.
     return InjectCustomKernel(builder, *deserialized_module, input_types,
-                              kernel_id_str);
+                              kernel_id_str, scope_prefix);
   }
 
  private:
@@ -640,6 +682,17 @@ absl::StatusOr<DynamicMlirOpResults> CallCustomKernel(
   std::string unique_name =
       GetUniqueCustomKernelName(name, kwargs, input_dims, input_dtypes);
 
+  std::string scope_prefix;
+  // Deferred lowering must use the captured provider, not live Python scopes.
+  if (const auto& context = ScopedPythonContextProvider::MaybeGetContext();
+      context.has_value() && !context->name_scopes().empty()) {
+    scope_prefix = absl::StrJoin(context->name_scopes(), "/");
+    // Only specialize imports within this module. Registry and executable
+    // cache identities retain their existing semantics.
+    absl::StrAppend(&unique_name, "_scope_",
+                    Fingerprint(context->name_scopes()));
+  }
+
   // Try to call a previously-loaded kernel with this name.
   mlir::ModuleOp module_op = GetModuleOp(builder);
   if (auto func = module_op.lookupSymbol<mlir::func::FuncOp>(unique_name)) {
@@ -650,7 +703,8 @@ absl::StatusOr<DynamicMlirOpResults> CallCustomKernel(
   // Load and specialize it here.
   TT_ASSIGN_OR_RETURN(mlir::func::FuncOp func,
                       CustomKernelRegistry::GetInstance().LoadCustomKernel(
-                          builder, name, kwargs, input_dims, input_dtypes));
+                          builder, name, kwargs, input_dims, input_dtypes,
+                          unique_name, scope_prefix));
   return mlir::func::Call(builder, func, inputs);
 }
 

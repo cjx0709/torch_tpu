@@ -14,7 +14,10 @@
 
 #include "csrc/ops/custom_kernels.h"
 
+#include <memory>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
@@ -25,6 +28,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/ops/op_builder_utils.h"
+#include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -32,7 +36,9 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 #include "re2/re2.h"
@@ -40,6 +46,11 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/translate/stablehlo.h"
 #include "xla/pjrt/mlir_to_hlo.h"
 
 namespace torch_tpu {
@@ -196,6 +207,103 @@ TEST_F(CustomKernelRegistryTest, RegisterAndCallMlirKernel) {
   // Check that no residual sharding attributes remain on the module, functions,
   // function arguments, function results, or operations.
   ExpectNoShardingAttributes(*module);
+}
+
+TEST_F(CustomKernelRegistryTest, ImportedKernelUsesCapturedNameScope) {
+  constexpr std::string_view kNamedAddKernel = R"(
+module @kernel_scoped_add {
+  func.func public @main(%arg0: tensor<10xf32>, %arg1: tensor<10xf32>) -> tensor<10xf32> {
+    %0 = stablehlo.add %arg0, %arg1 : tensor<10xf32> loc("Add:"("jit(inner)/add"))
+    return %0 : tensor<10xf32>
+  }
+}
+)";
+  RegisterCustomKernel("kernel_scoped_add", "", kNamedAddKernel);
+
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::func::registerAllExtensions(registry);
+  mlir::MLIRContext context;
+  context.appendDialectRegistry(registry);
+  context.loadAllAvailableDialects();
+  mlir::ModuleBuilder mb(context, mlir::unknownLoc(context));
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::Type arg_type =
+      mlir::makeTensorType(fb.getContext(), {10}, mlir::ElementType::F32);
+  mlir::MlirOp lhs = mlir::func::Argument(fb, arg_type);
+  mlir::MlirOp rhs = mlir::func::Argument(fb, arg_type);
+
+  // Provide captured contexts without a live name-scope guard, as deferred
+  // builders run after the Python scope that captured the op has exited.
+  const std::vector<std::string> caller_scopes = {"A", "B", "A"};
+  for (int i = 0; i < caller_scopes.size(); ++i) {
+    auto scopes = std::make_shared<const std::vector<std::string>>(
+        std::vector<std::string>{"outer", caller_scopes[i]});
+    ScopedPythonContextProvider provider(
+        PythonContext({"custom_kernel"}, nullptr, scopes), &fb);
+    TT_ASSERT_OK_AND_ASSIGN(
+        auto results,
+        CallCustomKernel(fb, {lhs, rhs}, "kernel_scoped_add", ""));
+    if (i == caller_scopes.size() - 1) {
+      mlir::func::Return(fb, results);
+    }
+  }
+
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  auto main_func = module->lookupSymbol<mlir::func::FuncOp>("main");
+  ASSERT_TRUE(main_func);
+  std::vector<std::string> callees;
+  for (auto call : main_func.getOps<mlir::func::CallOp>()) {
+    callees.push_back(call.getCallee().str());
+  }
+  ASSERT_EQ(callees.size(), 3);
+  EXPECT_EQ(callees[0], callees[2]);
+  EXPECT_NE(callees[0], callees[1]);
+
+  int num_functions = 0;
+  for (auto func : module->getOps<mlir::func::FuncOp>()) {
+    ++num_functions;
+  }
+  EXPECT_EQ(num_functions, 3);
+
+  for (int i = 0; i < 2; ++i) {
+    auto imported = module->lookupSymbol<mlir::func::FuncOp>(callees[i]);
+    ASSERT_TRUE(imported);
+    int num_adds = 0;
+    imported.walk(
+        [&](mlir::Operation* op) {  // REF_CAPTURE_OK=synchronous walk.
+          if (op->getName().getStringRef() != "stablehlo.add") return;
+          ++num_adds;
+          auto location = mlir::dyn_cast<mlir::NameLoc>(op->getLoc());
+          ASSERT_TRUE(location);
+          EXPECT_EQ(location.getName().getValue(), "Add:");
+          auto op_location =
+              mlir::dyn_cast<mlir::NameLoc>(location.getChildLoc());
+          ASSERT_TRUE(op_location);
+          const std::string name = op_location.getName().getValue().str();
+          EXPECT_THAT(name, HasSubstr(absl::StrCat("outer/", caller_scopes[i],
+                                                   "/jit(inner)/add")));
+          EXPECT_THAT(name, testing::Not(HasSubstr(absl::StrCat(
+                                "outer/", caller_scopes[1 - i], "/"))));
+        });
+    EXPECT_EQ(num_adds, 1);
+  }
+
+  // Verify the compiler consumes the composed op name, not just a location
+  // wrapper that disappears when the imported body is lowered again.
+  TT_ASSERT_OK_AND_ASSIGN(auto hlo_module, xla::ConvertStablehloToHlo(*module));
+  std::vector<std::string> hlo_add_names;
+  for (const xla::HloComputation* computation : hlo_module->computations()) {
+    for (const xla::HloInstruction* instruction : computation->instructions()) {
+      if (instruction->opcode() != xla::HloOpcode::kAdd) continue;
+      hlo_add_names.push_back(instruction->metadata().op_name());
+      EXPECT_EQ(instruction->metadata().op_type(), "Add");
+    }
+  }
+  EXPECT_THAT(hlo_add_names,
+              testing::Contains(HasSubstr("outer/A/jit(inner)/add")));
+  EXPECT_THAT(hlo_add_names,
+              testing::Contains(HasSubstr("outer/B/jit(inner)/add")));
 }
 
 TEST(RemoveShardingAnnotationsTest, StripsAllShardingAnnotations) {

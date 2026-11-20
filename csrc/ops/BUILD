@@ -582,6 +582,7 @@ torch_tpu_cc_library(
     hdrs = ["custom_kernels.h"],
     deps = [
         ":op_builder_utils",
+        ":python_context",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fingerprint_utils",
@@ -642,6 +643,7 @@ torch_tpu_cc_test(
     deps = [
         ":custom_kernels",
         ":op_builder_utils",
+        ":python_context",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
@@ -660,6 +662,8 @@ torch_tpu_cc_test(
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:func_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/translate:stablehlo",
         "@xla//xla/pjrt:mlir_to_hlo",
     ],
 )
